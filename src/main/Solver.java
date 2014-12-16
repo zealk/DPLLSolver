@@ -18,10 +18,15 @@ public class Solver {
     private long begintime;
     private long endtime;
     
-    private static int MODE = 1;
+    private long max_time = 5000;
     
-    public Solver(DPLLSolver s) {
+    private boolean killed = false;
+    
+    private int MODE = 1;
+    
+    public Solver(DPLLSolver s, int mode) {
         this.s = s;
+        this.MODE = mode;
         model = new HashSet<Integer>();
         undecided = new HashSet<Integer>();
         for (int i = 1 ; i <= s.vars ; i++) {
@@ -35,19 +40,36 @@ public class Solver {
         outputFormat(ret);
     }
     
+    /**
+     * Main function, DPLL procedule, in a recursive form
+     * @return
+     */
     public boolean DPLL() {
         //check every clause
         int ret = checkEveryClause();
         if (ret == 1) {
             //success, should print the solution
-            outputFormat(true);
-            System.exit(0);
+            //outputFormat(true);
+            //System.exit(0);
+            endtime = System.currentTimeMillis();
             return true;
         }
         if (ret == -1) {
             //failed in one branch
             return false;
         }
+
+        
+        if (killed) {
+            return false;
+        } else {
+            long timenow = System.currentTimeMillis();
+            if (timenow-begintime > max_time) {
+                killed = true;
+                return false;
+            }
+        }
+        
         //else ret == 0, there may be a solution, need more calc
         Set<Clause> decide_now = new HashSet<Clause>();
         boolean b_ret;
@@ -82,21 +104,32 @@ public class Solver {
     }
 
     private void outputFormat(boolean res) {
+        
+        if (!res) {
+            endtime = System.currentTimeMillis();
+        }
+        long costTime = (endtime - begintime);
+        
+        if (killed)
+            System.out.print("!");
+        System.out.print(costTime + "\t");
+        System.out.print(split_count + "\t");
+        System.out.print(res + "\t");
+        
+        /*
         int r;
         if (res)
             r = 1;
         else
             r = 0;
-        
-        endtime = System.currentTimeMillis();
-        long costTime = (endtime - begintime);
+
         System.out.println("c " + costTime + " ms.");
         System.out.println("c split count : " + split_count + ".");
         if (res) {
             printResult();
         }
         System.out.println("p cnf " + r + " " + s.vars + " " + s.cl_count);
-        
+        */
     }
     
     private void printResult() {
@@ -111,6 +144,15 @@ public class Solver {
         System.out.println();
     }
 
+    /**
+     * Choose which prop to split, depends on MODE
+     * MODE 0: random
+     * MODE 1: 2-clause max heuristic
+     * MODE 2: my undecided prop square weighted heuristic 
+     * @return 
+     *      positive number as prop to be true
+     *      negative as to be false
+     */
     private int chooseSplit() {
         split_count ++;
         if (MODE == 0) {    //randomly
@@ -167,6 +209,11 @@ public class Solver {
         return ret;
     }
     
+    /**
+     * calc the undecided prop in a clause
+     * @param cl
+     * @return number of undecided prop in a clause
+     */
     private int remainProp(Clause cl) {
         int i = 0;
         for (Integer prop : cl.clause) {
@@ -177,12 +224,61 @@ public class Solver {
         return i;
     }
 
+    /**
+     * My heuristic choose function
+     * @return
+     */
     private int my_choice() {
-        // TODO Auto-generated method stub
-        return 0;
+        float weight[] = new float[s.vars + 1];     //record the weight of every prop
+        int pos_neg[] = new int[s.vars + 1];        // > 0 if a prop appears positively more than negatively
+        for (int i = 1 ; i < weight.length ;i++) {
+            weight[i] = 0;
+            pos_neg[i] = 0;
+        }
+        for (Clause cl : s.clauses) {
+            if (cl.decided < 1) {
+                int undecided_prop = remainProp(cl);
+                for (Integer prop : cl.clause) {
+                    weight[Math.abs(prop)] += 1.0f/(float)(undecided_prop * undecided_prop);
+                    if (prop > 0)
+                        pos_neg[Math.abs(prop)] ++;
+                    else
+                        pos_neg[Math.abs(prop)] --;
+                }
+            }
+        }
+        
+        List<Integer> candidates = new ArrayList<Integer>();
+        float max_weight_abs = 0;
+        for (int i = 1 ; i < weight.length ;i++) {
+            if (model.contains(i) || model.contains(-i)) {
+                continue;
+            }
+            if (weight[i] == max_weight_abs) {
+                candidates.add(new Integer(i));
+            } else if (weight[i] > max_weight_abs) {
+                max_weight_abs = weight[i];
+                candidates.clear();
+                candidates.add(new Integer(i));
+            }
+        }
+        int idx = getRandomFrom0(candidates.size());
+        int ret = candidates.get(idx);
+        
+        if (pos_neg[ret] < 0) {
+            ret = -ret;
+        }
+        return ret;
+
     }
 
 
+    /**
+     * Create a environment for recursive call of DPLL.
+     * decide prop to be true if positive or false if negative
+     * @param prop
+     * @param decide_now
+     */
     private void decide(int prop, Set<Clause> decide_now) {
         model.add(prop);
         undecided.remove(Math.abs(prop));
@@ -198,6 +294,11 @@ public class Solver {
         
     }
     
+    /**
+     * Recover the environment after recursive call.
+     * @param prop
+     * @param decide_now
+     */
     private void resume(int prop, Set<Clause> decide_now) {
         model.remove(prop);
         undecided.add(new Integer(Math.abs(prop)));
@@ -207,6 +308,14 @@ public class Solver {
         decide_now.clear();
     }
 
+    /**
+     * Look for assigned value of prop in model set.
+     * @param prop
+     * @return
+     *      -1 if value in model is different from prop
+     *      1 if same
+     *      0 if not present in model
+     */
     private int truthValue(int prop) {
         if (model.contains(-prop)) {
             return -1;
@@ -222,6 +331,7 @@ public class Solver {
     /**
      * find a clause only contains one undecided prop
      * @return
+     *      the prop contained in that unit clause
      */
     private int unitClause() {
         for (Clause cl : s.clauses) {
@@ -364,10 +474,16 @@ public class Solver {
         return ret;
     }
 
+    /**
+     * Nearly the same as truthValue(), but check positive one first
+     * @param prop
+     * @return
+     */
     private int checkProp(Integer prop) {
         if (model.contains(prop)) {
             return 1;
-        } else if (model.contains(-prop)) {
+        }
+        if (model.contains(-prop)) {
             return -1;
         }
         return 0;
